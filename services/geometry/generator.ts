@@ -1,0 +1,370 @@
+
+import * as THREE from 'three';
+import { TextSettings, CharTransform } from '../../types';
+import { loadFont } from './text';
+import { getManifold } from './loader';
+import { fromManifold } from './converters';
+import { FALLBACK_FONT_URLS } from '../../constants';
+import { shapesToManifold, createSupportPrimitive, applyAutoBridge } from './utils';
+
+export const generateDualTextGeometry = async (settings: TextSettings): Promise<THREE.BufferGeometry | null> => {
+  if (!settings.fontUrl) throw new Error("No font selected");
+
+  // Load Primary Font, Manifold, and Fallback Fonts in parallel
+  const fontLoadPromises = [
+      loadFont(settings.fontUrl),
+      getManifold(),
+      ...FALLBACK_FONT_URLS.map(url => loadFont(url).catch(e => {
+          console.warn("Failed to load fallback font:", url);
+          return null;
+      }))
+  ];
+
+  const results = await Promise.all(fontLoadPromises);
+  const globalFont = results[0] as any;
+  const m = results[1] as any;
+  const fallbackFonts = results.slice(2).filter(f => f !== null) as any[];
+
+  if (!globalFont) throw new Error("Failed to load selected font.");
+  if (!m) throw new Error("Could not initialize Geometry Engine (Manifold).");
+
+  const { 
+    intersectionConfig, 
+    fontSize, 
+    spacing, 
+    baseHeight, 
+    basePadding,
+    baseType, 
+    baseCornerRadius, 
+    embedDepth: globalEmbedDepth
+  } = settings;
+
+  const length = intersectionConfig.length;
+  const gap = fontSize * spacing;
+  const extrusionDepth = fontSize * 5; 
+
+  const parts: any[] = [];
+  
+  let currentXOffset = 0;
+
+  // Helper to choose the best font for a character
+  const getBestFontForChar = (char: string, preferredFont: any) => {
+      if (!char || char.trim() === '') return preferredFont;
+      
+      // Check if preferred font has glyph
+      if (preferredFont.data?.glyphs && preferredFont.data.glyphs[char]) {
+          return preferredFont;
+      }
+      
+      // Check fallbacks
+      for (const fb of fallbackFonts) {
+          if (fb.data?.glyphs && fb.data.glyphs[char]) {
+              return fb;
+          }
+      }
+      
+      // Default to preferred if nothing found (will likely render nothing or box)
+      return preferredFont;
+  };
+
+  // --- 1. Generate Letter Intersections ---
+  for (let i = 0; i < length; i++) {
+      const config = intersectionConfig[i];
+      const char1 = config.char1;
+      const char2 = config.char2;
+      const isC1Space = char1.trim() === '';
+      const isC2Space = char2.trim() === '';
+
+      if (isC1Space && isC2Space) {
+          currentXOffset += gap + (fontSize * 0.5);
+          continue;
+      }
+
+      // Determine Base Fonts (Global vs Local Split)
+      const resolveFont = async (url?: string) => {
+          if (url && url !== settings.fontUrl) {
+              try {
+                  return await loadFont(url);
+              } catch (e) {
+                  console.warn(`Failed to load font ${url}, using global.`);
+              }
+          }
+          return globalFont;
+      };
+
+      let font1 = globalFont;
+      if (config.char1FontUrl || config.fontUrl) {
+          font1 = await resolveFont(config.char1FontUrl || config.fontUrl);
+      }
+      
+      let font2 = globalFont;
+      if (config.char2FontUrl || config.fontUrl) {
+          font2 = await resolveFont(config.char2FontUrl || config.fontUrl);
+      }
+
+      // Apply fallback logic per character
+      const finalFont1 = getBestFontForChar(char1, font1);
+      const finalFont2 = getBestFontForChar(char2, font2);
+
+      const getCharManifold = (c: string, transform: CharTransform, font: any) => {
+          if (c.trim() === '') return null;
+          const shapes = font.generateShapes(c, fontSize);
+          if (!shapes || shapes.length === 0) return null;
+          let mani = shapesToManifold(shapes, m, extrusionDepth);
+          
+          if (mani) {
+              // Apply Per-Char Transforms (in 2D space basically, before rotation)
+              const { scaleX, scaleY, moveX, moveY } = transform;
+              if (scaleX !== 1 || scaleY !== 1) {
+                   const scaled = mani.scale([scaleX, scaleY, 1]); 
+                   mani.delete();
+                   mani = scaled;
+              }
+              if (moveX !== 0 || moveY !== 0) {
+                   const moved = mani.translate([moveX * fontSize * 0.1, moveY * fontSize * 0.1, 0]);
+                   mani.delete();
+                   mani = moved;
+              }
+          }
+          return mani;
+      };
+
+      let resultManifold = null;
+      let m1 = null;
+      let m2 = null;
+
+      try {
+        if (!isC1Space) {
+             const raw = getCharManifold(char1, config.char1Transform, finalFont1);
+             if (raw) {
+                const b = raw.boundingBox();
+                const centerX = (b.max[0] + b.min[0]) / 2;
+                const bottomY = b.min[1];
+                const centerZ = (b.max[2] + b.min[2]) / 2;
+                const centered = raw.translate([-centerX, -bottomY, -centerZ]);
+                // Rotate for Intersection (Text 1)
+                m1 = centered.rotate([0, 45, 0]); 
+                raw.delete();
+                centered.delete();
+             }
+        }
+
+        if (!isC2Space) {
+             const raw = getCharManifold(char2, config.char2Transform, finalFont2);
+             if (raw) {
+                const b = raw.boundingBox();
+                const centerX = (b.max[0] + b.min[0]) / 2;
+                const bottomY = b.min[1];
+                const centerZ = (b.max[2] + b.min[2]) / 2;
+                const centered = raw.translate([-centerX, -bottomY, -centerZ]);
+                // Rotate for Intersection (Text 2)
+                m2 = centered.rotate([0, -45, 0]); 
+                raw.delete();
+                centered.delete();
+             }
+        }
+      } catch (e) {
+          console.warn(`Error preparing chars ${char1}/${char2}:`, e);
+      }
+
+      if (m1 && m2) {
+          try {
+              resultManifold = m1.intersect(m2);
+              if (resultManifold) {
+                   const b = resultManifold.boundingBox();
+                   if ((b.max[0] - b.min[0]) < 0.001 || (b.max[1] - b.min[1]) < 0.001) {
+                       resultManifold.delete();
+                       resultManifold = null;
+                   }
+              }
+          } catch (e) {
+              resultManifold = null;
+          }
+      } else {
+          if (m1) {
+              resultManifold = m1;
+              m1 = null;
+          } else if (m2) {
+              resultManifold = m2;
+              m2 = null;
+          }
+      }
+      
+      if (m1) m1.delete();
+      if (m2) m2.delete();
+
+      if (resultManifold) {
+          if (config.bridge && config.bridge.enabled && config.bridge.auto) {
+             resultManifold = applyAutoBridge(resultManifold, m);
+          }
+
+          const b = resultManifold.boundingBox();
+          const width = b.max[0] - b.min[0];
+
+          if (width > 0.001) {
+             const centerX = currentXOffset + (width / 2);
+             
+             // --- Apply Result Pair Positioning ---
+             const pX = config.pairSpacing.x || 0;
+             const pZ = config.pairSpacing.z || 0;
+             
+             const finalPos = resultManifold.translate([centerX + pX, 0, pZ]);
+             parts.push(finalPos);
+
+             // --- Manual Connector Bridge ---
+             if (config.bridge && config.bridge.enabled && !config.bridge.auto) {
+                 try {
+                     const { width: bw, height: bh, depth: bd, moveX: bx, moveY: by, moveZ: bz, rotationZ } = config.bridge;
+                     let bridge = m.Manifold.cube([bw, bh, bd], true);
+                     if (rotationZ !== 0) {
+                         const rotated = bridge.rotate([0, 0, rotationZ]);
+                         bridge.delete();
+                         bridge = rotated;
+                     }
+                     const positionedBridge = bridge.translate([centerX + pX + bx, by, pZ + bz]);
+                     parts.push(positionedBridge);
+                     bridge.delete();
+                 } catch (e) {
+                     console.warn("Manual bridge generation failed", e);
+                 }
+             }
+
+             // --- Supports ---
+             const supp = config.support;
+             if (supp && supp.enabled) {
+                 const h = supp.height;
+                 const w = supp.width;
+                 const supportGeom = createSupportPrimitive(m, supp.type, h, w);
+                 if (supportGeom) {
+                     const rotated = supportGeom.rotate([-90, 0, 0]);
+                     const activeEmbedDepth = config.embedDepth ?? globalEmbedDepth;
+                     const baseBottomY = (baseHeight > 0) ? (activeEmbedDepth - baseHeight) : 0;
+                     const shiftY = baseBottomY + (h / 2);
+                     const positioned = rotated.translate([centerX + pX, shiftY, pZ]);
+                     parts.push(positioned);
+                     if (supportGeom !== rotated) supportGeom.delete();
+                     if (rotated !== positioned) rotated.delete();
+                 }
+             }
+             
+             if (finalPos !== resultManifold) resultManifold.delete();
+
+             currentXOffset += width + gap;
+          } else {
+             resultManifold.delete();
+             currentXOffset += gap + (fontSize * 0.5); 
+          }
+      } else {
+          currentXOffset += gap + (fontSize * 0.5);
+      }
+  }
+
+  if (parts.length === 0) {
+      throw new Error("No printable 3D geometry could be generated.");
+  }
+
+  // --- 2. Create Base ---
+  if (baseHeight > 0) {
+      try {
+        const lettersUnion = m.Manifold.union(parts);
+        const b = lettersUnion.boundingBox();
+        const fullSize = { x: b.max[0] - b.min[0], z: b.max[2] - b.min[2] };
+        const center = { x: (b.max[0] + b.min[0]) / 2, z: (b.max[2] + b.min[2]) / 2 };
+        lettersUnion.delete(); 
+
+        const width = fullSize.x + basePadding;
+        const depth = fullSize.z + basePadding;
+
+        const shape = new THREE.Shape();
+        const x = -width / 2;
+        const y = -depth / 2;
+        
+        if (baseType === 'RECTANGLE') {
+            const r = Math.min(baseCornerRadius, width/2, depth/2);
+            shape.moveTo(x + r, y);
+            shape.lineTo(x + width - r, y);
+            shape.quadraticCurveTo(x + width, y, x + width, y + r);
+            shape.lineTo(x + width, y + depth - r);
+            shape.quadraticCurveTo(x + width, y + depth, x + width - r, y + depth);
+            shape.lineTo(x + r, y + depth);
+            shape.quadraticCurveTo(x, y + depth, x, y + depth - r);
+            shape.lineTo(x, y + r);
+            shape.quadraticCurveTo(x, y, x + r, y);
+        } else {
+            shape.absellipse(0, 0, width / 2, depth / 2, 0, Math.PI * 2, false, 0);
+        }
+
+        const baseManifoldRaw = shapesToManifold([shape], m, baseHeight);
+        
+        if (baseManifoldRaw) {
+            const baseRotated = baseManifoldRaw.rotate([-90, 0, 0]);
+            baseManifoldRaw.delete();
+            const yOffset = globalEmbedDepth - baseHeight;
+            const baseFinal = baseRotated.translate([center.x, yOffset, center.z]);
+            baseRotated.delete();
+            parts.push(baseFinal);
+        }
+      } catch (e) {
+          console.error("Base generation failed", e);
+      }
+  }
+
+  // --- 3. Final Union & Cleanup ---
+  try {
+      const finalManifold = m.Manifold.union(parts);
+      for (const p of parts) { if (p && typeof p.delete === 'function') p.delete(); }
+      let cleanManifold = finalManifold;
+
+      if (baseHeight > 0) {
+          const components = finalManifold.decompose();
+          const isArray = Array.isArray(components);
+          const count = isArray ? components.length : components.size();
+          
+          if (count > 1) {
+              const kept = [];
+              const b = finalManifold.boundingBox();
+              const minY = b.min[1];
+              const threshold = minY + 0.2;
+
+              for (let i = 0; i < count; i++) {
+                  const comp = isArray ? components[i] : components.get(i);
+                  const cb = comp.boundingBox();
+                  if (cb.min[1] <= threshold) {
+                      kept.push(comp);
+                  } else {
+                      comp.delete();
+                  }
+              }
+              
+              if (kept.length < count) {
+                  if (kept.length > 0) {
+                      cleanManifold = m.Manifold.union(kept);
+                      kept.forEach(k => k.delete());
+                      finalManifold.delete();
+                  } else {
+                      kept.forEach(k => k.delete());
+                      cleanManifold = finalManifold;
+                  }
+              } else {
+                  kept.forEach(k => k.delete());
+                  cleanManifold = finalManifold;
+              }
+          }
+          if (!isArray && components.delete) components.delete();
+      }
+
+      const resultGeom = fromManifold(cleanManifold, m);
+      cleanManifold.delete();
+
+      resultGeom.computeBoundingBox();
+      if (resultGeom.boundingBox) {
+          const c = new THREE.Vector3();
+          resultGeom.boundingBox.getCenter(c);
+          resultGeom.translate(-c.x, -c.y, -c.z);
+      }
+      
+      return resultGeom;
+  } catch (e: any) {
+      throw new Error(`Final geometry merge failed: ${e.message}`);
+  }
+};
