@@ -1,7 +1,6 @@
 import opentype from 'opentype.js';
 import { FontLibrary, FontVariant } from '../types';
-import { BASE_URL, RAW_FONT_PATHS } from '../font_constants';
-import { FALLBACK_FONT_URLS } from '../constants';
+import { BASE_URL, RAW_FONT_PATHS, FALLBACK_FONT_URLS } from '../font_constants';
 
 // --- Font Library Logic ---
 

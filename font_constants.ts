@@ -1,6 +1,12 @@
 // Base URL for raw file access to avoid 403/CORs issues with CDN wrappers
 export const BASE_URL = "https://raw.githubusercontent.com/google/fonts/main";
 
+export const FALLBACK_FONT_URLS = [
+    `${BASE_URL}/ofl/ibmplexsansjp/IBMPlexSansJP-Regular.ttf`,
+    `${BASE_URL}/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf`
+];
+
+
 // Flattened list of fonts provided
 export const RAW_FONT_PATHS = [
   "apache/aclonica/Aclonica-Regular.ttf",

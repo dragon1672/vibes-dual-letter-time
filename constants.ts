@@ -3,10 +3,7 @@ import { BaseType, SupportType, TextSettings } from './types';
 import { BASE_URL } from './font_constants';
 import { getFontLibrary } from './services/fontManager';
 
-export const FALLBACK_FONT_URLS = [
-    `${BASE_URL}/ofl/ibmplexsansjp/IBMPlexSansJP-Regular.ttf`,
-    `${BASE_URL}/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf`
-];
+
 
 const library = getFontLibrary();
 const defaultFamily = 'IBMPlex Sans JP'; 

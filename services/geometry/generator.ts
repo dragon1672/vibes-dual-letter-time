@@ -4,7 +4,7 @@ import { TextSettings, CharTransform } from '../../types';
 import { loadFont } from './text';
 import { getManifold } from './loader';
 import { fromManifold } from './converters';
-import { FALLBACK_FONT_URLS } from '../../constants';
+import { FALLBACK_FONT_URLS } from '../../font_constants';
 import { shapesToManifold, createSupportPrimitive, applyAutoBridge } from './utils';
 
 export const generateDualTextGeometry = async (settings: TextSettings): Promise<THREE.BufferGeometry | null> => {
