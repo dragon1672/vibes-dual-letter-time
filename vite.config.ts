@@ -26,7 +26,8 @@ export default defineConfig({
       'three/examples/jsm/loaders/FontLoader',
       'three/examples/jsm/loaders/TTFLoader',
       'three/examples/jsm/utils/BufferGeometryUtils',
-      'three/examples/jsm/exporters/STLExporter'
+      'three/examples/jsm/exporters/STLExporter',
+      'opentype.js'
     ],
   },
   resolve: {
@@ -37,9 +38,19 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     target: 'esnext',
-    minify: 'esbuild',
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: false,
+        pure_funcs: [],
+      },
+      mangle: {
+        safari10: true,
+      },
+    },
     commonjsOptions: {
       include: [/manifold-3d/, /node_modules/],
+      transformMixedEsModules: true,
     },
   },
 });

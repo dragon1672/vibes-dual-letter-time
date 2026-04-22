@@ -1,4 +1,4 @@
-
+import opentype from 'opentype.js';
 import { FontLibrary, FontVariant } from '../types';
 import { BASE_URL, RAW_FONT_PATHS } from '../font_constants';
 import { FALLBACK_FONT_URLS } from '../constants';
@@ -68,8 +68,7 @@ export const initFallbackFonts = () => {
     if (fallbackInitPromise) return fallbackInitPromise;
 
     fallbackInitPromise = (async () => {
-        // @ts-ignore
-        if (!window.opentype) return;
+        if (!opentype) return;
 
         const promises = FALLBACK_FONT_URLS.map(async (url, index) => {
             try {
@@ -83,8 +82,7 @@ export const initFallbackFonts = () => {
                 document.fonts.add(fontFace);
                 
                 // OpenType Parse
-                // @ts-ignore
-                const otFont = window.opentype.parse(buffer);
+                const otFont = opentype.parse(buffer);
                 
                 return { name, otFont };
             } catch (e) {
@@ -181,10 +179,8 @@ export const loadPreviewFont = async (
                 loadedFonts.add(fontName);
 
                 // 2. Parse with OpenType to check glyphs
-                // @ts-ignore
-                if (window.opentype) {
-                    // @ts-ignore
-                    const otFont = window.opentype.parse(buffer);
+                if (opentype) {
+                    const otFont = opentype.parse(buffer);
                     parsedFonts.set(fontName, otFont);
                 }
             } catch (e) {
